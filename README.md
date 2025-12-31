@@ -1,5 +1,10 @@
 * 使った論文/内の学習手法を実装
-* 実装済み　
+# 実装済み
+- universal lora
+- universal lalora
+- universal null lalora
+- universal null lalora plus
+- universal null lalora plus effi abm
 
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
