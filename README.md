@@ -1,3 +1,6 @@
+* 使った論文/内の学習手法を実装
+* 実装済み　
+
 This repository contains training, generation and utility scripts for Stable Diffusion.
 
 [__Change History__](#change-history) is moved to the bottom of the page. 
