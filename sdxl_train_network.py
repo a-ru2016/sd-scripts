@@ -109,8 +109,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                 #         clip_skip=args.clip_skip,
                 #     )
                 # else:
-                input_ids1 = input_ids1.to(accelerator.device)
-                input_ids2 = input_ids2.to(accelerator.device)
+                input_ids1 = input_ids1.to(text_encoders[0].device)
+                input_ids2 = input_ids2.to(text_encoders[0].device)
                 encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
                     args.max_token_length,
                     input_ids1,
@@ -122,6 +122,9 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
                     None if not args.full_fp16 else weight_dtype,
                     accelerator=accelerator,
                 )
+                encoder_hidden_states1 = encoder_hidden_states1.to(accelerator.device)
+                encoder_hidden_states2 = encoder_hidden_states2.to(accelerator.device)
+                pool2 = pool2.to(accelerator.device)
         else:
             encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
             encoder_hidden_states2 = batch["text_encoder_outputs2_list"].to(accelerator.device).to(weight_dtype)
@@ -170,6 +173,8 @@ class SdxlNetworkTrainer(train_network.NetworkTrainer):
 def setup_parser() -> argparse.ArgumentParser:
     parser = train_network.setup_parser()
     sdxl_train_util.add_sdxl_training_arguments(parser)
+    parser.add_argument("--enable_effilora", action="store_true", help="Enable EffiLoRA (Shared A + MoE B) / EffiLoRAを有効にする")
+    parser.add_argument("--effilora_num_experts", type=int, default=4, help="Number of experts for EffiLoRA / EffiLoRAのエキスパート数")
     return parser
 
 
@@ -177,6 +182,13 @@ if __name__ == "__main__":
     parser = setup_parser()
 
     args = parser.parse_args()
+    
+    # Inject EffiLoRA args into network_args
+    if args.enable_effilora:
+        if args.network_args is None: args.network_args = []
+        args.network_args.append(f"enable_effilora=True")
+        args.network_args.append(f"num_experts={args.effilora_num_experts}")
+
     train_util.verify_command_line_training_args(args)
     args = train_util.read_config_from_file(args, parser)
 

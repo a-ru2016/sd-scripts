@@ -29,6 +29,7 @@ from library.config_util import (
 )
 import library.huggingface_util as huggingface_util
 import library.custom_train_functions as custom_train_functions
+from library.fast_forward import FastForward
 from library.custom_train_functions import (
     apply_snr_weight,
     get_weighted_text_embeddings,
@@ -118,9 +119,9 @@ class NetworkTrainer:
             t_enc.to(accelerator.device, dtype=weight_dtype)
 
     def get_text_cond(self, args, accelerator, batch, tokenizers, text_encoders, weight_dtype):
-        input_ids = batch["input_ids"].to(accelerator.device)
+        input_ids = batch["input_ids"].to(text_encoders[0].device)
         encoder_hidden_states = train_util.get_hidden_states(args, input_ids, tokenizers[0], text_encoders[0], weight_dtype)
-        return encoder_hidden_states
+        return encoder_hidden_states.to(accelerator.device)
 
     def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):
         noise_pred = unet(noisy_latents, timesteps, text_conds).sample
@@ -880,6 +881,30 @@ class NetworkTrainer:
         # For --sample_at_first
         self.sample_images(accelerator, args, 0, global_step, accelerator.device, vae, tokenizer, text_encoder, unet)
 
+        # Fast Forward Setup
+        fast_forward = None
+        if args.fast_forward_enabled:
+            if args.fast_forward_validation_dir is None:
+                raise ValueError("Fast Forward requires --fast_forward_validation_dir")
+            
+            import glob
+            from library.fast_forward import FFValidationDataset, ff_collate_fn
+            
+            val_img_paths = glob.glob(os.path.join(args.fast_forward_validation_dir, "*"))
+            val_img_paths = [p for p in val_img_paths if os.path.splitext(p)[1].lower() in train_util.IMAGE_EXTENSIONS]
+            
+            if len(val_img_paths) == 0:
+                 raise ValueError(f"No images found in {args.fast_forward_validation_dir}")
+            
+            logger.info(f"Fast Forward: found {len(val_img_paths)} validation images.")
+            
+            val_dataset = FFValidationDataset(val_img_paths, args.resolution, tokenizer)
+            val_dataloader = torch.utils.data.DataLoader(
+                val_dataset, batch_size=min(args.train_batch_size, len(val_dataset)), shuffle=False, num_workers=0, collate_fn=ff_collate_fn
+            )
+            
+            fast_forward = FastForward(accelerator, args, val_dataloader)
+
         # training loop
         if initial_step > 0:  # only if skip_until_initial_step is specified
             for skip_epoch in range(epoch_to_start):  # skip epochs
@@ -1017,7 +1042,90 @@ class NetworkTrainer:
                             params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
                             accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
+                    # Fast Forward: Capture before step
+                    weights_before = None
+                    if fast_forward and global_step % fast_forward.interval == 0:
+                        weights_before = fast_forward.capture_weights(accelerator.unwrap_model(network))
+
                     optimizer.step()
+
+                    # Fast Forward: Execute
+                    if fast_forward and weights_before is not None and global_step % fast_forward.interval == 0:
+                        # Initialize cache if needed
+                        if fast_forward.cached_batches is None:
+                            def preprocess_func(batch):
+                                with torch.no_grad():
+                                    if "latents" in batch and batch["latents"] is not None:
+                                        latents = batch["latents"].to(accelerator.device).to(dtype=weight_dtype)
+                                    else:
+                                        imgs = batch["images"].to(accelerator.device).to(dtype=vae_dtype)
+                                        latents = vae.encode(imgs).latent_dist.sample().to(dtype=weight_dtype)
+                                    latents = latents * self.vae_scale_factor
+                                    
+                                    with torch.set_grad_enabled(train_text_encoder), accelerator.autocast():
+                                        if args.weighted_captions:
+                                            text_encoder_conds = get_weighted_text_embeddings(
+                                                tokenizer,
+                                                text_encoder,
+                                                batch["captions"],
+                                                accelerator.device,
+                                                args.max_token_length // 75 if args.max_token_length else 1,
+                                                clip_skip=args.clip_skip,
+                                            )
+                                        else:
+                                            text_encoder_conds = self.get_text_cond(
+                                                args, accelerator, batch, tokenizers, text_encoders, weight_dtype
+                                            )
+                                    
+                                    # Fixed noise and timesteps for consistent comparison
+                                    noise = torch.randn_like(latents)
+                                    b_size = latents.shape[0]
+                                    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (b_size,), device=latents.device).long()
+                                    
+                                    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                                    
+                                    if args.v_parameterization:
+                                        target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                                    else:
+                                        target = noise
+                                    
+                                    return {
+                                        "noisy_latents": noisy_latents,
+                                        "timesteps": timesteps,
+                                        "text_encoder_conds": text_encoder_conds,
+                                        "target": target,
+                                        "batch": batch, # Keep original batch for metadata if needed
+                                        "weight_dtype": weight_dtype
+                                    }
+                            
+                            fast_forward.cache_batches(preprocess_func)
+
+                        weights_after = fast_forward.capture_weights(accelerator.unwrap_model(network))
+                        delta = fast_forward.calculate_delta(weights_before, weights_after)
+                        
+                        def compute_loss_closure(cached_batch):
+                            with torch.no_grad():
+                                noisy_latents = cached_batch["noisy_latents"]
+                                timesteps = cached_batch["timesteps"]
+                                text_encoder_conds = cached_batch["text_encoder_conds"]
+                                target = cached_batch["target"]
+                                batch = cached_batch["batch"]
+                                w_dtype = cached_batch["weight_dtype"]
+                                
+                                # Call UNet with cached inputs
+                                noise_pred = self.call_unet(args, accelerator, unet, noisy_latents, timesteps, text_encoder_conds, batch, w_dtype)
+                                
+                                loss = train_util.conditional_loss(noise_pred.float(), target.float(), reduction="none", loss_type=args.loss_type, huber_c=args.huber_c)
+                                return loss.mean()
+
+                        ff_steps = fast_forward.run(accelerator.unwrap_model(network), global_step, delta, compute_loss_closure)
+                        if ff_steps > 0:
+                            logger.info(f"Fast Forward: advanced {ff_steps} simulated steps.")
+                        
+                        del weights_before
+                        del weights_after
+                        del delta
+
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
@@ -1233,6 +1341,11 @@ def setup_parser() -> argparse.ArgumentParser:
         help="initial step number including all epochs, 0 means first step (same as not specifying). overwrites initial_epoch."
         + " / 初期ステップ数、全エポックを含むステップ数、0で最初のステップ（未指定時と同じ）。initial_epochを上書きする",
     )
+    parser.add_argument("--fast_forward_enabled", action="store_true", help="Enable Fast Forward Low-Rank Training")
+    parser.add_argument("--fast_forward_interval", type=int, default=6, help="Interval for Fast Forward steps (default: 6)")
+    parser.add_argument("--fast_forward_validation_dir", type=str, default=None, help="Directory for Fast Forward validation images (approx 32 images recommended)")
+    parser.add_argument("--fast_forward_max_steps", type=int, default=100, help="Max steps for Fast Forward optimization (default: 100)")
+
     # parser.add_argument("--loraplus_lr_ratio", default=None, type=float, help="LoRA+ learning rate ratio")
     # parser.add_argument("--loraplus_unet_lr_ratio", default=None, type=float, help="LoRA+ UNet learning rate ratio")
     # parser.add_argument("--loraplus_text_encoder_lr_ratio", default=None, type=float, help="LoRA+ text encoder learning rate ratio")
