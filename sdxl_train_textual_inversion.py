@@ -50,8 +50,8 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
         input_ids1 = batch["input_ids"]
         input_ids2 = batch["input_ids2"]
         with torch.enable_grad():
-            input_ids1 = input_ids1.to(accelerator.device)
-            input_ids2 = input_ids2.to(accelerator.device)
+            input_ids1 = input_ids1.to(text_encoders[0].device)
+            input_ids2 = input_ids2.to(text_encoders[0].device)
             encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
                 args.max_token_length,
                 input_ids1,
@@ -63,6 +63,9 @@ class SdxlTextualInversionTrainer(train_textual_inversion.TextualInversionTraine
                 None if not args.full_fp16 else weight_dtype,
                 accelerator=accelerator,
             )
+            encoder_hidden_states1 = encoder_hidden_states1.to(accelerator.device)
+            encoder_hidden_states2 = encoder_hidden_states2.to(accelerator.device)
+            pool2 = pool2.to(accelerator.device)
         return encoder_hidden_states1, encoder_hidden_states2, pool2
 
     def call_unet(self, args, accelerator, unet, noisy_latents, timesteps, text_conds, batch, weight_dtype):

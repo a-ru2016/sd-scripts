@@ -341,12 +341,11 @@ def train(args):
                             clip_skip=args.clip_skip,
                         )
                     else:
-                        input_ids = batch["input_ids"].to(accelerator.device)
-                        encoder_hidden_states = train_util.get_hidden_states(
-                            args, input_ids, tokenizer, text_encoder, None if not args.full_fp16 else weight_dtype
-                        )
-
-                # Sample noise, sample a random timestep for each image, and add noise to the latents,
+                                        input_ids = batch["input_ids"].to(text_encoder.device)
+                                        encoder_hidden_states = train_util.get_hidden_states(
+                                            args, input_ids, tokenizer, text_encoder, None if not args.full_fp16 else weight_dtype
+                                        )
+                                        # Sample noise, sample a random timestep for each image, and add noise to the latents,
                 # with noise offset and/or multires noise if specified
                 noise, noisy_latents, timesteps, huber_c = train_util.get_noise_noisy_latents_and_timesteps(args, noise_scheduler, latents)
 

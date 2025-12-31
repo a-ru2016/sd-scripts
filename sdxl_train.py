@@ -631,22 +631,10 @@ def train(args):
                 if "text_encoder_outputs1_list" not in batch or batch["text_encoder_outputs1_list"] is None:
                     input_ids1 = batch["input_ids"]
                     input_ids2 = batch["input_ids2"]
-                    with torch.set_grad_enabled(args.train_text_encoder):
+                    with torch.no_grad():
                         # Get the text embedding for conditioning
-                        # TODO support weighted captions
-                        # if args.weighted_captions:
-                        #     encoder_hidden_states = get_weighted_text_embeddings(
-                        #         tokenizer,
-                        #         text_encoder,
-                        #         batch["captions"],
-                        #         accelerator.device,
-                        #         args.max_token_length // 75 if args.max_token_length else 1,
-                        #         clip_skip=args.clip_skip,
-                        #     )
-                        # else:
-                        input_ids1 = input_ids1.to(accelerator.device)
-                        input_ids2 = input_ids2.to(accelerator.device)
-                        # unwrap_model is fine for models not wrapped by accelerator
+                        input_ids1 = input_ids1.to(text_encoder1.device)
+                        input_ids2 = input_ids2.to(text_encoder1.device)
                         encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
                             args.max_token_length,
                             input_ids1,
@@ -658,6 +646,9 @@ def train(args):
                             None if not args.full_fp16 else weight_dtype,
                             accelerator=accelerator,
                         )
+                        encoder_hidden_states1 = encoder_hidden_states1.to(accelerator.device)
+                        encoder_hidden_states2 = encoder_hidden_states2.to(accelerator.device)
+                        pool2 = pool2.to(accelerator.device)
                 else:
                     encoder_hidden_states1 = batch["text_encoder_outputs1_list"].to(accelerator.device).to(weight_dtype)
                     encoder_hidden_states2 = batch["text_encoder_outputs2_list"].to(accelerator.device).to(weight_dtype)

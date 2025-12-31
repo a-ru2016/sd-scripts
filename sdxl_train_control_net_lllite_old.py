@@ -377,8 +377,8 @@ def train(args):
                     input_ids2 = batch["input_ids2"]
                     with torch.no_grad():
                         # Get the text embedding for conditioning
-                        input_ids1 = input_ids1.to(accelerator.device)
-                        input_ids2 = input_ids2.to(accelerator.device)
+                        input_ids1 = input_ids1.to(text_encoder1.device)
+                        input_ids2 = input_ids2.to(text_encoder1.device)
                         encoder_hidden_states1, encoder_hidden_states2, pool2 = train_util.get_hidden_states_sdxl(
                             args.max_token_length,
                             input_ids1,
