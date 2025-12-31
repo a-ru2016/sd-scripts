@@ -112,8 +112,8 @@ accelerate launch --num_cpu_threads_per_process 2 sdxl_train_network_ABM.py \
 |lalora_lambda|0.0|LaLoRA正則化の強さ。0より大きい場合有効化されます。|
 |enable_effilora|False|EffiLoRA (MoE) を有効にするか。|
 |num_experts|4|EffiLoRA有効時のExpert数。|
-|use_dora,False|DoRA (Weight-Decomposed LoRA) を有効にするか。|
-|loraplus_lr_ratio|16.0,LoRA+ のレート（Up層の学習率倍率）。|
+|use_dora|False|DoRA (Weight-Decomposed LoRA) を有効にするか。|
+|loraplus_lr_ratio|16.0|LoRA+ のレート（Up層の学習率倍率）。|
 |svd_cache_path|None|Null Space計算結果のキャッシュパス（次回以降の起動高速化）。|
 |abm_batch_size|None|ABMステージ専用のバッチサイズ（VRAM節約用）。|
 
