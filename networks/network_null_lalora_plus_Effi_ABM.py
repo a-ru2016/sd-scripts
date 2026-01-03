@@ -311,6 +311,7 @@ class NullUniversalModule(nn.Module):
             else:
                 gate_input = x.mean(dim=1) if x.dim() == 3 else x
             
+            self.gate.to(device)
             gate_logits = self.gate(gate_input.to(dtype))
             if self.training:
                 mask = self.expert_mask.to(device=device, dtype=dtype).view(1, -1)
@@ -698,6 +699,73 @@ class NullUniversalNetwork(nn.Module):
             if module.gate is not None: module.gate.requires_grad_(True)
             if self.use_dora: module.m.requires_grad_(True)
             else: module.s.requires_grad_(True)
+
+    def load_weights(self, file):
+        if not os.path.exists(file):
+            return f"Weights file not found: {file}"
+        
+        if file.endswith(".safetensors"):
+            loaded_weights = load_file(file)
+        else:
+            loaded_weights = torch.load(file, map_location="cpu")
+
+        if self.enable_effilora and self.shared_alpha_down is not None:
+            shared_ad = loaded_weights.get("shared_alpha_down", None)
+            if shared_ad is not None:
+                self.shared_alpha_down.data.copy_(shared_ad)
+
+        count = 0
+        for name, module in self.modules_dict.items():
+            safe_name = name # name is already safe_name in modules_dict
+            def find_key(suffix):
+                k1 = f"{safe_name}.{suffix}"
+                k2 = f"modules_dict.{safe_name}.{suffix}"
+                return loaded_weights.get(k1, loaded_weights.get(k2, None))
+
+            ad = find_key("alpha_down")
+            au = find_key("alpha_up")
+            gate_w = find_key("gate.weight")
+            gate_b = find_key("gate.bias")
+            m = find_key("m")
+            s = find_key("s")
+            nd = find_key("null_down")
+            nu = find_key("null_up")
+
+            if ad is not None:
+                if self.enable_effilora:
+                     if count == 0 and self.shared_alpha_down is not None:
+                         # Fallback: if shared_alpha_down was not in loaded_weights, use first alpha_down
+                         if "shared_alpha_down" not in loaded_weights:
+                             self.shared_alpha_down.data.copy_(ad)
+                else:
+                     module.alpha_down.data.copy_(ad)
+
+            if au is not None:
+                if au.shape == module.alpha_up.shape:
+                    module.alpha_up.data.copy_(au)
+                elif au.dim() == 2 and module.alpha_up.dim() == 3:
+                    module.alpha_up.data[0].copy_(au)
+
+            if module.gate is not None and gate_w is not None:
+                module.gate.weight.data.copy_(gate_w)
+                if gate_b is not None:
+                    module.gate.bias.data.copy_(gate_b)
+
+            if self.use_dora:
+                if m is not None and hasattr(module, "m") and module.m is not None:
+                    module.m.data.copy_(m)
+            else:
+                if s is not None and hasattr(module, "s") and module.s is not None:
+                    module.s.data.copy_(s)
+
+            if nd is not None:
+                module.null_down.data.copy_(nd)
+            if nu is not None:
+                module.null_up.data.copy_(nu)
+            
+            count += 1
+            
+        return f"Loaded {count} modules from {file}."
 
     def on_epoch_start(self, text_encoder, unet):
         self.train()
