@@ -95,7 +95,14 @@ class LoRAModule(torch.nn.Module):
             if torch.rand(1) < self.module_dropout:
                 return org_forwarded
 
-        lx = self.lora_down(x)
+        # Check device for lora_down
+        target_device = self.lora_down.weight.device
+        if x.device != target_device:
+            x_in = x.to(target_device)
+        else:
+            x_in = x
+
+        lx = self.lora_down(x_in)
 
         # normal dropout
         if self.dropout is not None and self.training:
@@ -117,6 +124,10 @@ class LoRAModule(torch.nn.Module):
             scale = self.scale
 
         lx = self.lora_up(lx)
+        
+        # match device with org_forwarded
+        if lx.device != org_forwarded.device:
+            lx = lx.to(org_forwarded.device)
 
         return org_forwarded + lx * self.multiplier * scale
 
