@@ -561,7 +561,10 @@ class NetworkTrainer:
                 
                 # Filter out empty param groups if any
                 if isinstance(abm_params_config, list):
-                     abm_params_config = [p for p in abm_params_config if len(p.get("params", [])) > 0]
+                    for p in abm_params_config:
+                        if "params" in p and not isinstance(p["params"], list):
+                            p["params"] = list(p["params"])
+                    abm_params_config = [p for p in abm_params_config if len(p.get("params", [])) > 0]
                 
                 # Use specified optimizer or default to main optimizer
                 # FORCE OPTIMIZATION: If main uses 8bit, use 8bit for ABM too to save VRAM
